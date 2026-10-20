@@ -12,3 +12,7 @@ message ClientConfig {
   uint32 heartbeat_interval = 5;    // 秒，默认 30
   uint32 shaping_heavy_packets = 6; // 默认 32
 }
+
+message ServerConfig {
+  // 入站参数全走 streamSettings 的 mistSettings；本消息为空，注册与标识用。
+}

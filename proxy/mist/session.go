@@ -6,7 +6,6 @@ import (
 	"encoding/binary"
 	"io"
 	"math/big"
-	mrand "math/rand"
 	"net"
 	"sync"
 	"sync/atomic"
@@ -209,7 +208,11 @@ func (s *Session) nextC2SCtr() (uint32, error) {
 // writeOneFrameLocked seals and sends exactly one frame. Caller holds writeMu.
 func (s *Session) writeOneFrameLocked(epoch, ctr uint32, sidFlags byte, plaintext []byte) error {
 	heavy := atomic.AddUint32(&s.heavySent, 1) <= s.cfg.shaping.heavyPackets
-	padLen := s.cfg.shaping.tailPad
+	// SPEC appendix B.2: light-phase PLEN = rand(0, tailPad). A fixed
+	// padLen would be a writable rule signature; the wire format is
+	// unchanged (still a single PLEN byte, padding bytes stay CSPRNG
+	// inside sealFrame).
+	padLen := randIntN(s.cfg.shaping.tailPad + 1)
 	delayMs, fragment := 0, false
 	if heavy {
 		// SPEC 8.2: random padding, pre-send jitter, irregular fragmentation.
@@ -398,19 +401,28 @@ func (s *Session) handleControl(pt []byte) {
 
 // ---- heartbeat (SPEC 10.1) ----
 
+// heartbeatJitterFrac is the anti-targeting jitter applied to the heartbeat
+// period and to the PONG timeout: every interval is drawn uniformly from
+// hb*(1-frac)..hb*(1+frac) with crypto/rand as the only entropy source.
+// A fixed heartbeat period is a writable rule signature (SPEC B.5). The
+// "two consecutive missed PONGs = dead session" semantics (SPEC 10.1) are
+// unchanged.
+const heartbeatJitterFrac = 0.25
+
 func (s *Session) heartbeatLoop() {
 	hb := s.cfg.hb
 	if hb <= 0 {
 		hb = defaultHeartbeatSec * time.Second
 	}
-	t := time.NewTicker(hb)
-	defer t.Stop()
 	missed := 0
 	for {
+		// Jittered inter-ping wait (replaces the old fixed time.NewTicker).
+		wait := time.NewTimer(jitterDuration(hb, heartbeatJitterFrac))
 		select {
 		case <-s.doneCh:
+			wait.Stop()
 			return
-		case <-t.C:
+		case <-wait.C:
 		}
 		var cookie [8]byte
 		if _, err := io.ReadFull(rand.Reader, cookie[:]); err != nil {
@@ -427,15 +439,20 @@ func (s *Session) heartbeatLoop() {
 			s.pingMu.Unlock()
 			return
 		}
+		// Jittered PONG timeout; the death rule still counts consecutive
+		// misses, so "2 missed periods -> disconnect" is preserved.
+		pongWait := time.NewTimer(jitterDuration(hb, heartbeatJitterFrac))
 		select {
 		case <-ch:
+			pongWait.Stop()
 			missed = 0
-		case <-time.After(hb):
+		case <-pongWait.C:
 			missed++
 			s.pingMu.Lock()
 			delete(s.pendingPings, cookie)
 			s.pingMu.Unlock()
 		case <-s.doneCh:
+			pongWait.Stop()
 			return
 		}
 		if missed >= 2 {
@@ -496,9 +513,31 @@ func randIntN(n int) int {
 	}
 	v, err := rand.Int(rand.Reader, big.NewInt(int64(n)))
 	if err != nil {
-		return mrand.Intn(n) // unreachable in practice
+		// crypto/rand failure is effectively impossible on supported
+		// platforms; degrade to 0 (unjittered/unpadded) rather than to
+		// math/rand, whose deterministic output would itself be a
+		// fingerprintable signature.
+		return 0
 	}
 	return int(v.Int64())
+}
+
+// jitterDuration returns base scaled by a crypto/rand uniform factor in
+// [1-frac, 1+frac]. It is the single choke point for all anti-targeting
+// timer jitter in this package: no caller may substitute math/rand.
+// On RNG failure it degrades to the unjittered base.
+func jitterDuration(base time.Duration, frac float64) time.Duration {
+	if base <= 0 || frac <= 0 {
+		return base
+	}
+	const ppm = int64(1_000_000)
+	span := int64(2*frac*float64(ppm)) + 1 // inclusive upper bound
+	lo := int64((1 - frac) * float64(ppm))
+	v, err := rand.Int(rand.Reader, big.NewInt(span))
+	if err != nil {
+		return base
+	}
+	return time.Duration(lo+v.Int64()) * base / time.Duration(ppm)
 }
 
 func minInt(a, b int) int {

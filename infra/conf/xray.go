@@ -32,6 +32,7 @@ var (
 		"wireguard":     func() interface{} { return &WireGuardConfig{IsClient: false} },
 		"hysteria":      func() interface{} { return new(HysteriaServerConfig) },
 		"anytls":        func() interface{} { return new(AnyTLSServerConfig) },
+		"mist":          func() interface{} { return new(MistServerConfig) },
 		"tun":           func() interface{} { return new(TunConfig) },
 	}, "protocol", "settings")
 

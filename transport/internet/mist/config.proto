@@ -1,0 +1,18 @@
+syntax = "proto3";
+
+package xray.transport.internet.mist;
+
+option go_package = "github.com/xtls/xray-core/transport/internet/mist";
+
+message Account {
+  string client_id = 1; // 16 字节，hex 编码
+  string auth_key = 2;  // 32 字节 K_auth，base64(std) 编码
+}
+
+message Config {
+  string client_id = 1;              // 客户端：16 字节 hex
+  string auth_key = 2;               // 客户端：32 字节 base64(std)
+  uint32 heartbeat_interval = 3;     // 秒，0=默认30
+  uint32 shaping_heavy_packets = 4;  // 0=默认32
+  repeated Account accounts = 5;     // 服务端：账号表
+}

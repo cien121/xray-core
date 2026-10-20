@@ -38,6 +38,8 @@ func (p TransportProtocol) Build() (string, error) {
 		return "hysteria", nil
 	case "anytls":
 		return "anytls", nil
+	case "mist":
+		return "mist", nil
 	default:
 		return "", errors.New("Config: unknown transport protocol: ", p)
 	}
@@ -62,6 +64,7 @@ type StreamConfig struct {
 	HTTPUPGRADESettings *HttpUpgradeConfig `json:"httpupgradeSettings"`
 	HysteriaSettings    *HysteriaConfig    `json:"hysteriaSettings"`
 	AnyTLSSettings      *AnyTLSConfig      `json:"anytlsSettings"`
+	MistSettings        *MistConfig        `json:"mistSettings"`
 	SocketSettings      *SocketConfig      `json:"sockopt"`
 }
 
@@ -203,6 +206,16 @@ func (c *StreamConfig) Build() (*internet.StreamConfig, error) {
 		config.TransportSettings = append(config.TransportSettings, &internet.TransportConfig{
 			ProtocolName: "anytls",
 			Settings:     serial.ToTypedMessage(as),
+		})
+	}
+	if c.MistSettings != nil {
+		ms, err := c.MistSettings.Build()
+		if err != nil {
+			return nil, errors.New("Failed to build Mist config.").Base(err)
+		}
+		config.TransportSettings = append(config.TransportSettings, &internet.TransportConfig{
+			ProtocolName: "mist",
+			Settings:     serial.ToTypedMessage(ms),
 		})
 	}
 	if c.SocketSettings != nil {
