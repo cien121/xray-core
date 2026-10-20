@@ -42,8 +42,13 @@ func checkMistCredential(cidHex, keyB64 string) error {
 }
 
 func (c *MistConfig) Build() (proto.Message, error) {
-	if err := checkMistCredential(c.ClientID, c.AuthKey); err != nil {
-		return nil, err
+	// Client credentials are optional here: the server side (inbound)
+	// only needs Accounts. The transport dialer validates them at dial
+	// time, so a missing clientId/authKey fails fast on use, not on load.
+	if c.ClientID != "" || c.AuthKey != "" {
+		if err := checkMistCredential(c.ClientID, c.AuthKey); err != nil {
+			return nil, err
+		}
 	}
 	config := &misttransport.Config{
 		ClientId:            c.ClientID,
