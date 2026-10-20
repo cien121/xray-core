@@ -493,16 +493,20 @@ func (s *Session) accountRx(st *Stream, n int64) {
 	if n <= 0 {
 		return
 	}
+	st.mu.Lock()
 	st.recvSinceUpdate += n
-	if st.recvSinceUpdate >= windowUpdateThreshold {
-		inc := uint32(st.recvSinceUpdate)
-		st.recvSinceUpdate = 0
-		body := make([]byte, 6)
-		body[0] = ctrlWindowUpdate
-		body[1] = st.id
-		binary.BigEndian.PutUint32(body[2:6], inc)
-		_ = s.writeFrame(0x00, body) // best effort
+	if st.recvSinceUpdate < windowUpdateThreshold {
+		st.mu.Unlock()
+		return
 	}
+	inc := uint32(st.recvSinceUpdate)
+	st.recvSinceUpdate = 0
+	st.mu.Unlock()
+	body := make([]byte, 6)
+	body[0] = ctrlWindowUpdate
+	body[1] = st.id
+	binary.BigEndian.PutUint32(body[2:6], inc)
+	_ = s.writeFrame(0x00, body) // best effort
 }
 
 // ---- helpers ----
