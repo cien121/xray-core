@@ -1,0 +1,14 @@
+syntax = "proto3";
+
+package xray.proxy.mist;
+
+option go_package = "github.com/xtls/xray-core/proxy/mist";
+
+message ClientConfig {
+  string address = 1;
+  uint32 port = 2;
+  string client_id = 3;  // hex 编码，16 字节
+  string auth_key = 4;   // base64(std) 编码，32 字节 K_auth
+  uint32 heartbeat_interval = 5;    // 秒，默认 30
+  uint32 shaping_heavy_packets = 6; // 默认 32
+}

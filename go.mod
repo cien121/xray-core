@@ -65,5 +65,5 @@ require (
 )
 
 replace golang.zx2c4.com/wireguard => github.com/amnezia-vpn/amneziawg-go/v3 v3.1.20260828
+replace github.com/amnezia-vpn/amneziawg-go/v3 => ./third_party/amneziawg-go
 
-replace github.com/amnezia-vpn/amneziawg-go/v3 => /Users/admin/corebuild/amneziawg-go-local

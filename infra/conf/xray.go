@@ -49,6 +49,7 @@ var (
 		"trojan":      func() interface{} { return new(TrojanClientConfig) },
 		"hysteria":    func() interface{} { return new(HysteriaClientConfig) },
 		"anytls":      func() interface{} { return new(AnyTLSClientConfig) },
+		"mist":        func() interface{} { return new(MistClientConfig) },
 		"dns":         func() interface{} { return new(DNSOutboundConfig) },
 		"wireguard":   func() interface{} { return &WireGuardConfig{IsClient: true} },
 	}, "protocol", "settings")
