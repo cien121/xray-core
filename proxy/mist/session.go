@@ -455,8 +455,9 @@ func (s *Session) heartbeatLoop() {
 			pongWait.Stop()
 			return
 		}
-		if missed >= 2 {
-			// SPEC 10.1: two consecutive periods without PONG = dead.
+		if missed >= 4 {
+			// SPEC 10.1 relaxed: four consecutive periods without PONG = dead.
+			// (2 was too aggressive on lossy mobile networks)
 			s.close()
 			return
 		}
