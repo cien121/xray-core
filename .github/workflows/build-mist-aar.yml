@@ -18,6 +18,8 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write  # publish AAR to release mist-v0.1
 
     steps:
       - name: Checkout xray-core (mist branch)
@@ -93,6 +95,23 @@ jobs:
           [ "$MIST_COUNT" -gt 0 ] || { echo "FAIL: proxy/mist not found in libgojni.so"; exit 1; }
           [ "$UTLS_COUNT" -gt 0 ] || { echo "FAIL: hellochrome_155 not found in libgojni.so"; exit 1; }
           echo "verification passed"
+
+      - name: Publish AAR to release mist-v0.1
+        if: success()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # idempotent: remove previous asset so re-runs replace it
+          gh release delete-asset mist-v0.1 libv2ray.aar -y --repo ${{ github.repository }} 2>/dev/null || true
+
+      - name: Upload libv2ray.aar to release mist-v0.1
+        if: success()
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: mist-v0.1
+          name: Mist AAR v0.1 (proxy/mist outbound, uTLS Chrome 155)
+          files: wrapper/libv2ray.aar
+          fail_on_unmatched_files: true
 
       - name: Upload build artifacts
         uses: actions/upload-artifact@v7
