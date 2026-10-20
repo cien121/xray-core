@@ -6,6 +6,14 @@ name: Build Mist AAR
 
 on:
   workflow_dispatch:
+  # NOTE: workflow_dispatch is only registered by GitHub after the file has
+  # been seen via a push event. This push trigger (scoped to this file on the
+  # mist branch) forces registration; afterwards dispatch works too.
+  push:
+    branches:
+      - mist
+    paths:
+      - '.github/workflows/build-mist-aar.yml'
 
 jobs:
   build:
