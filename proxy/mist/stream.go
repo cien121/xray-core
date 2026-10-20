@@ -12,7 +12,7 @@ import (
 // 2MB initial window: sized for high-RTT mobile links (256KB capped
 // throughput at ~9Mbps on 230ms RTT; 2MB lifts the cap to ~70Mbps).
 const (
-	initStreamWindow      = 2 * 1024 * 1024 // per-stream initial window
+	initStreamWindow      = 8 * 1024 * 1024 // per-stream initial window
 	windowUpdateThreshold = 1024 * 1024     // receiver advertises every 1MB consumed
 	maxPlainPerFrameBase  = 16366           // 16384 - 2(header tail) - 16(tag); minus padLen per frame
 )
