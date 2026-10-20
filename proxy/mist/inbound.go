@@ -88,6 +88,11 @@ func decodeConnectRequest(r io.Reader) (net.Destination, error) {
 	return dest, nil
 }
 
+// Network implements proxy.Inbound: v0.1 only supports TCP CONNECT streams.
+func (s *Server) Network() []net.Network {
+	return []net.Network{net.Network_TCP}
+}
+
 // Process handles one inbound Mist stream: decode the CONNECT request,
 // dispatch it through the router, then shuttle bytes in both directions.
 func (s *Server) Process(ctx context.Context, network net.Network, conn stat.Connection, dispatcher routing.Dispatcher) error {
