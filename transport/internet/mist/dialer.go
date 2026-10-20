@@ -68,6 +68,14 @@ func Dial(ctx context.Context, dest cnet.Destination, streamSettings *internet.M
 	if err != nil {
 		return nil, err
 	}
+	// SPEC 9.1: initiate the stream with an empty SYN so the server
+	// accepts it. The upper protocol's bytes follow as regular data
+	// frames. (The native outbound piggybacks CONNECT on its SYN; the
+	// transport has no CONNECT to send.)
+	if err := sess.writeFrame(st.id|flagSYN, nil); err != nil {
+		st.done()
+		return nil, errors.New("mist: failed to send stream SYN").Base(err)
+	}
 	return &streamConn{
 		s:      st,
 		local:  sess.conn.LocalAddr(),
