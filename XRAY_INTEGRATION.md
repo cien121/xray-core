@@ -34,7 +34,7 @@ TLS（含 uTLS Chrome 指纹）**由 Xray 传输层完成**：`streamSettings` �
 }
 ```
 
-- `fingerprint: chrome` 让 Xray 用 uTLS 完整模仿 Chrome ClientHello（规约 4 节要求）。
+- `fingerprint` 建议填 `hellochrome_155`（显式锁定 Chrome 155 指纹，不随 uTLS 的 auto 升级而漂移；填 `chrome` 则为 auto，同样可用）。uTLS 已随 mist 分支升到 Chrome 155 时代（见 PR XTLS/Xray-core#7135 的 cherry-pick）。
 - `serverName` 填雾域名；必须是真实解析到服务端的域名、真实有效证书。
 - `allowInsecure` 必须 false（规约要求客户端校验证书链）。
 
@@ -57,7 +57,7 @@ TLS（含 uTLS Chrome 指纹）**由 Xray 传输层完成**：`streamSettings` �
     "security": "tls",
     "tlsSettings": {
       "serverName": "www.example-blog.com",
-      "fingerprint": "chrome",
+      "fingerprint": "hellochrome_155",
       "alpn": ["h2", "http/1.1"],
       "allowInsecure": false
     }
