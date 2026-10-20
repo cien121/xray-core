@@ -47,7 +47,13 @@ jobs:
         working-directory: wrapper
         run: |
           go mod edit -replace github.com/xtls/xray-core=../xray-core
-          grep -E '^(replace|module)' go.mod
+          # mist branch pins xtls/reality to the Mar 2026 API ([]byte keys);
+          # the wrapper's newer Oct 2026 pin changed the API to typed
+          # crypto/ecdh + crypto/mldsa keys, which mist's
+          # transport/internet/reality/config.go was not written against.
+          # Downgrade so MVS selects the version mist was built/tested with.
+          go mod edit -require=github.com/xtls/reality@v0.0.0-20260322125925-9234c772ba8f
+          grep -E 'xtls/reality' go.mod
 
       - name: Setup Android SDK
         uses: android-actions/setup-android@v4
