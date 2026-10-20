@@ -515,12 +515,11 @@ func (s *Session) accountRx(st *Stream, n int64) {
 	inc := uint32(st.recvSinceUpdate)
 	st.recvSinceUpdate = 0
 	st.mu.Unlock()
-		body := make([]byte, 6)
-		body[0] = ctrlWindowUpdate
-		body[1] = st.id
-		binary.BigEndian.PutUint32(body[2:6], inc)
-		_ = s.writeFrame(0x00, body) // best effort
-	}
+	body := make([]byte, 6)
+	body[0] = ctrlWindowUpdate
+	body[1] = st.id
+	binary.BigEndian.PutUint32(body[2:6], inc)
+	_ = s.writeFrame(0x00, body) // best effort
 }
 
 // ---- helpers ----
