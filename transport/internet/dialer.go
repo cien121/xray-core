@@ -3,6 +3,8 @@ package internet
 import (
 	"context"
 	"fmt"
+	"sort"
+	"sync"
 	"strings"
 
 	"github.com/xtls/xray-core/common"
@@ -33,15 +35,34 @@ type Dialer interface {
 // dialFunc is an interface to dial network connection to a specific destination.
 type dialFunc func(ctx context.Context, dest net.Destination, streamSettings *MemoryStreamConfig) (stat.Connection, error)
 
-var transportDialerCache = make(map[string]dialFunc)
+var (
+	transportDialerCache = make(map[string]dialFunc)
+	transportDialerMu    sync.RWMutex
+)
 
 // RegisterTransportDialer registers a Dialer with given name.
 func RegisterTransportDialer(protocol string, dialer dialFunc) error {
+	transportDialerMu.Lock()
+	defer transportDialerMu.Unlock()
 	if _, found := transportDialerCache[protocol]; found {
 		return errors.New(protocol, " dialer already registered").AtError()
 	}
 	transportDialerCache[protocol] = dialer
 	return nil
+}
+
+// ListRegisteredTransports returns the sorted names of all registered
+// transport dialers. Used by the Android wrapper's startup self-check to
+// fail fast when a transport (e.g. "mist") was not linked into the build.
+func ListRegisteredTransports() []string {
+	transportDialerMu.RLock()
+	defer transportDialerMu.RUnlock()
+	names := make([]string, 0, len(transportDialerCache))
+	for name := range transportDialerCache {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
 }
 
 // Dial dials a internet connection towards the given destination.
@@ -56,7 +77,9 @@ func Dial(ctx context.Context, dest net.Destination, streamSettings *MemoryStrea
 		}
 
 		protocol := streamSettings.ProtocolName
+		transportDialerMu.RLock()
 		dialer := transportDialerCache[protocol]
+		transportDialerMu.RUnlock()
 		if dialer == nil {
 			return nil, errors.New(protocol, " dialer not registered").AtError()
 		}
@@ -64,7 +87,9 @@ func Dial(ctx context.Context, dest net.Destination, streamSettings *MemoryStrea
 	}
 
 	if dest.Network == net.Network_UDP {
+		transportDialerMu.RLock()
 		udpDialer := transportDialerCache["udp"]
+		transportDialerMu.RUnlock()
 		if udpDialer == nil {
 			return nil, errors.New("UDP dialer not registered").AtError()
 		}
