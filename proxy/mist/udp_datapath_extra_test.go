@@ -273,6 +273,52 @@ func TestUDPResetRTOBackoffOnWindowUpdate(t *testing.T) {
 	}
 }
 
+// TestUDPWindowUpdateDuplicateNoBackoffReset: repeated WINDOW_UPDATEs with
+// the same (or a smaller) window value must NOT reset RTO backoff. Only a
+// genuinely increased window may. This guards against a peer spamming
+// duplicate updates to zero out backoff and cause a retransmit storm
+// (chan's 2026-10-23 10:21 review).
+func TestUDPWindowUpdateDuplicateNoBackoffReset(t *testing.T) {
+	rel := NewUDPReliability(nil)
+	sess := &UDPSession{Rel: rel}
+	mgr := &udpStreamManager{sess: sess}
+	st := &UDPStream{mgr: mgr, peerWinCh: make(chan struct{}, 1)}
+
+	// Establish a baseline window without touching the reliability layer.
+	const base uint64 = 262144
+	st.peerMax = base
+
+	// Simulate an in-flight packet with an inflated backoff, as if ACKs
+	// were withheld while the receiver buffer was full.
+	rel.PacketSent(1, [][]byte{[]byte("data")}, 100)
+	rel.mu.Lock()
+	rel.rto = 8 * time.Second
+	rel.mu.Unlock()
+	if got := rel.RTO(); got != 8*time.Second {
+		t.Fatalf("setup failed: expected inflated RTO 8s, got %v", got)
+	}
+
+	// 1. Duplicate window values must not reset backoff.
+	for i := 0; i < 5; i++ {
+		st.onPeerWindow(base)
+		if got := rel.RTO(); got != 8*time.Second {
+			t.Fatalf("duplicate WINDOW_UPDATE #%d reset RTO backoff: got %v, want 8s", i, got)
+		}
+	}
+
+	// 2. A smaller window value must not reset backoff either.
+	st.onPeerWindow(base - 1)
+	if got := rel.RTO(); got != 8*time.Second {
+		t.Fatalf("smaller WINDOW_UPDATE reset RTO backoff: got %v, want 8s", got)
+	}
+
+	// 3. A genuinely increased window must reset the backoff.
+	st.onPeerWindow(base + 1000)
+	if got := rel.RTO(); got >= 8*time.Second {
+		t.Fatalf("increased WINDOW_UPDATE did not reset RTO backoff: got %v", got)
+	}
+}
+
 // TestUDPWithheldAckRecovery: when a STREAM frame is dropped due to
 // receive-buffer overflow, handleFrame returns false so the packet ACK is
 // withheld (the peer's RTO will retransmit). After the app drains the
