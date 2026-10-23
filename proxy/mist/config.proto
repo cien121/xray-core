@@ -11,6 +11,7 @@ message ClientConfig {
   string auth_key = 4;   // base64(std) 编码，32 字节 K_auth
   uint32 heartbeat_interval = 5;    // 秒，默认 30
   uint32 shaping_heavy_packets = 6; // 默认 32
+  bool udp = 7;  // true=UDP 传输（UDP-DESIGN.md v1.0），false=TCP/TLS（默认）
 }
 
 message ServerConfig {

@@ -29,6 +29,9 @@ type ClientConfig struct {
 	AuthKey             string                 `protobuf:"bytes,4,opt,name=auth_key,json=authKey,proto3" json:"auth_key,omitempty"`                                        // base64(std) 编码，32 字节 K_auth
 	HeartbeatInterval   uint32                 `protobuf:"varint,5,opt,name=heartbeat_interval,json=heartbeatInterval,proto3" json:"heartbeat_interval,omitempty"`         // 秒，默认 30
 	ShapingHeavyPackets uint32                 `protobuf:"varint,6,opt,name=shaping_heavy_packets,json=shapingHeavyPackets,proto3" json:"shaping_heavy_packets,omitempty"` // 默认 32
+	// Udp selects UDP transport instead of TCP/TLS (UDP-DESIGN.md v1.0).
+	// NOTE: manually added; run protoc to regenerate descriptor for wire compat.
+	Udp                 bool                   `protobuf:"varint,7,opt,name=udp,proto3" json:"udp,omitempty"`
 	unknownFields       protoimpl.UnknownFields
 	sizeCache           protoimpl.SizeCache
 }
@@ -103,6 +106,13 @@ func (x *ClientConfig) GetShapingHeavyPackets() uint32 {
 		return x.ShapingHeavyPackets
 	}
 	return 0
+}
+
+func (x *ClientConfig) GetUdp() bool {
+	if x != nil {
+		return x.Udp
+	}
+	return false
 }
 
 type ServerConfig struct {

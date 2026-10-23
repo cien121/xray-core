@@ -6,6 +6,7 @@ import (
 	"encoding/binary"
 	"encoding/hex"
 	"io"
+	stdnet "net"
 	"sync"
 	"time"
 
@@ -35,9 +36,17 @@ type Client struct {
 	server        net.Destination
 	policyManager policy.Manager
 	params        sessionParams
+	useUDP        bool
 
 	mu       sync.Mutex
 	sessions []*Session
+
+	// UDP state (when useUDP is true).
+	udpMu      sync.Mutex
+	udpSession *UDPSession
+	udpConn    UDPPacketConn
+	udpMgr     *udpStreamManager
+	udpClient  *UDPClient
 }
 
 func init() {
@@ -74,6 +83,18 @@ func NewClient(ctx context.Context, config *ClientConfig) (*Client, error) {
 		dest.Port = 443
 	}
 
+	// Safety gate (2026-10-23 review): when UDP transport is enabled, the
+	// Initial codec must not be a test-only implementation talking to a
+	// public server. Random-ciphertext Initials are a DPI fingerprint.
+	// Refuse the config here so no config path can push them onto a real
+	// network; release builds additionally compile the codec out entirely
+	// (initial_codec_disabled.go, needs -tags mist_unsafe_initial for lab).
+	if config.GetUdp() {
+		if err := CheckInitialCodecSafeForAddr(&RandomCiphertextCodec{}, config.Address); err != nil {
+			return nil, err
+		}
+	}
+
 	hbSec := config.HeartbeatInterval
 	if hbSec == 0 {
 		hbSec = defaultHeartbeatSec
@@ -99,6 +120,7 @@ func NewClient(ctx context.Context, config *ClientConfig) (*Client, error) {
 		server:        dest,
 		policyManager: p,
 		params:        params,
+		useUDP:        config.GetUdp(),
 	}, nil
 }
 
@@ -134,6 +156,74 @@ func (c *Client) newSession(ctx context.Context, dialer internet.Dialer) (*Sessi
 	}
 	errors.LogDebug(ctx, "mist: session established with ", c.server.NetAddr())
 	return sess, nil
+}
+
+// getUDPMgr returns the shared UDP stream manager, creating the session
+// and manager on first use. The UDP session is shared across all streams
+// (unlike TCP which pools sessions).
+func (c *Client) getUDPMgr(ctx context.Context) (*udpStreamManager, error) {
+	c.udpMu.Lock()
+	defer c.udpMu.Unlock()
+
+	if c.udpMgr != nil {
+		return c.udpMgr, nil
+	}
+
+	// Resolve server UDP address.
+	addr := c.server.Address.String()
+	if addr == "" {
+		return nil, errors.New("mist udp: server address not set")
+	}
+	udpAddr, err := stdnet.ResolveUDPAddr("udp", stdnet.JoinHostPort(addr, itoa(int(c.server.Port))))
+	if err != nil {
+		return nil, errors.New("mist udp: resolve failed").Base(err)
+	}
+
+	udpClient := NewUDPClient(udpAddr, c.params.cid, c.params.kAuth)
+	sess, conn, err := udpClient.Handshake()
+	if err != nil {
+		return nil, err
+	}
+
+	mgr := newUDPStreamManager(sess, conn, udpAddr)
+	c.udpSession = sess
+	c.udpConn = conn
+	c.udpClient = udpClient
+	c.udpMgr = mgr
+	errors.LogDebug(ctx, "mist udp: session established with ", udpAddr.String())
+	return mgr, nil
+}
+
+// getUDPSession is kept for compatibility; prefer getUDPMgr.
+func (c *Client) getUDPSession(ctx context.Context) (*UDPSession, UDPPacketConn, error) {
+	mgr, err := c.getUDPMgr(ctx)
+	if err != nil {
+		return nil, nil, err
+	}
+	return mgr.sess, mgr.conn, nil
+}
+
+// itoa is a tiny int-to-string helper to avoid strconv import churn.
+func itoa(i int) string {
+	if i == 0 {
+		return "0"
+	}
+	neg := i < 0
+	if neg {
+		i = -i
+	}
+	var b [8]byte
+	pos := len(b)
+	for i > 0 {
+		pos--
+		b[pos] = byte('0' + i%10)
+		i /= 10
+	}
+	if neg {
+		pos--
+		b[pos] = '-'
+	}
+	return string(b[pos:])
 }
 
 // getStream returns a live session and a fresh stream on it. It tries, in
@@ -321,6 +411,11 @@ func (c *Client) Process(ctx context.Context, link *transport.Link, dialer inter
 		cancel()
 	}, sessionPolicy.Timeouts.ConnectionIdle)
 
+	// UDP transport: use UDPSession instead of TCP Stream pool.
+	if c.useUDP {
+		return c.processUDPTransport(ctx, link, target, timer, sessionPolicy)
+	}
+
 	st, err := c.getStream(ctx, dialer)
 	if err != nil {
 		return err
@@ -433,6 +528,135 @@ func (c *Client) processUDP(ctx context.Context, link *transport.Link, st *Strea
 	}
 	if err := task.Run(ctx, uplinkDone, downlinkDone); err != nil {
 		return errors.New("mist: udp relay ends").Base(err)
+	}
+	return nil
+}
+
+// processUDPTransport handles outbound connections over the UDP transport.
+// It uses the shared udpStreamManager (established via UDP handshake).
+// The flow mirrors processTCP: SYN + CONNECT, read result code, then
+// bidirectional copy. UDP targets use DATAGRAM frames instead.
+func (c *Client) processUDPTransport(ctx context.Context, link *transport.Link, target net.Destination, timer *signal.ActivityTimer, sessionPolicy policy.Session) error {
+	mgr, err := c.getUDPMgr(ctx)
+	if err != nil {
+		return err
+	}
+
+	errors.LogInfo(ctx, "tunneling request to ", target, " via mist-udp ", c.server.NetAddr())
+
+	if target.Network == net.Network_TCP {
+		return c.processUDPTransportTCP(ctx, link, mgr, target, timer, sessionPolicy)
+	}
+	return c.processUDPTransportUDP(ctx, link, mgr, target, timer)
+}
+
+// processUDPTransportTCP proxies one TCP connection over a UDP stream.
+func (c *Client) processUDPTransportTCP(ctx context.Context, link *transport.Link, mgr *udpStreamManager, target net.Destination, timer *signal.ActivityTimer, sessionPolicy policy.Session) error {
+	st := mgr.openStream()
+	if st == nil {
+		return errors.New("mist udp: no free stream ID")
+	}
+	defer st.done()
+
+	// SYN + CONNECT request (SPEC 9.2, reused over UDP per UDP-DESIGN §4.1).
+	req, err := encodeConnectRequest(target)
+	if err != nil {
+		return err
+	}
+	if err := mgr.sendFrames([][]byte{EncodeUDPFrame(UDPFrameSyn, st.sid, req)}); err != nil {
+		return errors.New("mist udp: failed to open stream").Base(err)
+	}
+	// Server replies on the same stream: [CODE(1)].
+	var code [1]byte
+	if _, err := io.ReadFull(st, code[:]); err != nil {
+		return errors.New("mist udp: failed to read connect result").Base(err)
+	}
+	if code[0] != codeSuccess {
+		return errors.New("mist udp: server refused connection: ", connectResultText(code[0]))
+	}
+
+	requestDone := func() error {
+		defer timer.SetTimeout(sessionPolicy.Timeouts.DownlinkOnly)
+		defer st.CloseWrite() // FIN: half-close
+		return buf.Copy(link.Reader, buf.NewWriter(st), buf.UpdateActivity(timer))
+	}
+	responseDone := func() error {
+		defer timer.SetTimeout(sessionPolicy.Timeouts.UplinkOnly)
+		return buf.Copy(&buf.SingleReader{Reader: st}, link.Writer, buf.UpdateActivity(timer))
+	}
+	responseDoneAndCloseWriter := task.OnSuccess(responseDone, task.Close(link.Writer))
+	if err := task.Run(ctx, requestDone, responseDoneAndCloseWriter); err != nil {
+		return errors.New("mist udp: connection ends").Base(err)
+	}
+	return nil
+}
+
+// processUDPTransportUDP relays UDP datagrams over DATAGRAM frames.
+// Each datagram is wrapped as [ATYP][ADDR][PORT][LEN][DATA] (same layout
+// as the TCP bearer) and sent unreliably; inbound datagrams are parsed
+// and written back. There is no connection semantic: the relay ends when
+// either direction's copy loop returns.
+func (c *Client) processUDPTransportUDP(ctx context.Context, link *transport.Link, mgr *udpStreamManager, target net.Destination, timer *signal.ActivityTimer) error {
+	sid := mgr.allocSID()
+	if sid == 0 {
+		return errors.New("mist udp: no free stream ID")
+	}
+	dgramCh := mgr.registerDatagram(sid)
+	defer mgr.unregisterDatagram(sid)
+
+	uplinkDone := func() error {
+		defer timer.SetTimeout(300 * time.Second)
+		for {
+			mb, err := link.Reader.ReadMultiBuffer()
+			if err != nil {
+				return err
+			}
+			for _, b := range mb {
+				dgram, derr := buildUDPDatagram(target, b.Bytes())
+				b.Release()
+				if derr != nil {
+					return derr
+				}
+				if len(dgram) > MaxUDPPlaintext-4 {
+					errors.LogDebug(ctx, "mist udp: dropping oversized datagram: ", len(dgram))
+					continue
+				}
+				if serr := mgr.sendFrames([][]byte{EncodeUDPFrame(UDPFrameDatagram, sid, dgram)}); serr != nil {
+					return serr
+				}
+				timer.Update()
+			}
+		}
+	}
+	downlinkDone := func() error {
+		defer timer.SetTimeout(300 * time.Second)
+		for {
+			select {
+			case dgram, ok := <-dgramCh:
+				if !ok {
+					return errors.New("mist udp: datagram channel closed")
+				}
+				data, perr := parseUDPDatagram(dgram)
+				if perr != nil {
+					errors.LogDebug(ctx, "mist udp: dropping malformed datagram: ", perr)
+					continue
+				}
+				b := buf.New()
+				b.Write(data)
+				if werr := link.Writer.WriteMultiBuffer(buf.MultiBuffer{b}); werr != nil {
+					b.Release()
+					return werr
+				}
+				timer.Update()
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-mgr.doneCh:
+				return errors.New("mist udp: session closed")
+			}
+		}
+	}
+	if err := task.Run(ctx, uplinkDone, downlinkDone); err != nil {
+		return errors.New("mist udp: udp relay ends").Base(err)
 	}
 	return nil
 }

@@ -12,6 +12,7 @@ import (
 // MistClientConfig is the JSON configuration for the Mist outbound.
 //   - clientId: 16 bytes, hex-encoded (the CID in SPEC 6.2, sent in clear)
 //   - authKey:  32 bytes K_auth, base64(std)-encoded
+//   - udp: true=UDP transport (UDP-DESIGN.md v1.0), false=TCP/TLS (default)
 type MistClientConfig struct {
 	Address             *Address `json:"address"`
 	Port                uint16   `json:"port"`
@@ -19,6 +20,7 @@ type MistClientConfig struct {
 	AuthKey             string   `json:"authKey"`
 	HeartbeatInterval   uint32   `json:"heartbeatInterval"`
 	ShapingHeavyPackets uint32   `json:"shapingHeavyPackets"`
+	Udp                 bool     `json:"udp"`
 }
 
 func (c *MistClientConfig) Build() (proto.Message, error) {
@@ -44,5 +46,6 @@ func (c *MistClientConfig) Build() (proto.Message, error) {
 		AuthKey:             c.AuthKey,
 		HeartbeatInterval:   c.HeartbeatInterval,
 		ShapingHeavyPackets: c.ShapingHeavyPackets,
+		Udp:                 c.Udp,
 	}, nil
 }
