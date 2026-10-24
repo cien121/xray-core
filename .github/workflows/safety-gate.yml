@@ -13,8 +13,15 @@ name: Safety Gate — random-ciphertext Initial must not ship (xray)
 #  Layer 2 — build tag: without `-tags mist_unsafe_initial` the codec is an
 #    inert stub (proxy/mist/initial_codec_disabled.go); the real
 #    implementation (initial_codec_unsafe.go) is excluded. `go tool nm`
-#    must NOT find its implementation symbols (buildInitial /
-#    parseInitialPacket) in the release binary.
+#    must NOT find the lab-only canary symbol (UnsafeLabCanary) in the
+#    release binary.
+#
+#  Canary history: before Phase 0, the gate checked for
+#    RandomCiphertextCodec.buildInitial / parseInitialPacket. Those are
+#    small methods that the Go compiler inlines, so `go tool nm` could not
+#    find them even in lab builds — the check was vacuously passing since
+#    Phase 0. The dedicated UnsafeLabCanary function (marked //go:noinline
+#    and kept reachable via init()) replaces them as the gate target.
 #
 # NOTE: this workflow builds ./main (test files are not compiled), so it is
 # independent of proxy/mist test-file state.
@@ -42,12 +49,21 @@ jobs:
 
       - name: Assert unsafe codec symbols ABSENT from release binary
         run: |
-          if go tool nm /tmp/xray-release | grep -q "proxy/mist.(\*RandomCiphertextCodec).buildInitial\|proxy/mist.(\*RandomCiphertextCodec).parseInitialPacket"; then
-            echo "::error::release binary contains random-ciphertext codec implementation symbols"
-            go tool nm /tmp/xray-release | grep "RandomCiphertextCodec" | head
+          if go tool nm /tmp/xray-release | grep -q "UnsafeLabCanary"; then
+            echo "::error::release binary contains lab-only canary symbol (unsafe codec leaked into release)"
+            go tool nm /tmp/xray-release | grep "UnsafeLabCanary" | head
             exit 1
           fi
-          echo "OK: no unsafe codec symbols in release binary"
+          echo "OK: no lab-only canary symbol in release binary"
+
+      - name: Assert release binary built WITHOUT lab tag
+        run: |
+          if go version -m /tmp/xray-release | grep -q "mist_unsafe_initial"; then
+            echo "::error::release binary build settings contain mist_unsafe_initial tag"
+            go version -m /tmp/xray-release | grep -A5 "build"
+            exit 1
+          fi
+          echo "OK: release binary build settings do not contain lab tag"
 
       - name: Safety-gate unit tests (no tag needed)
         run: go test ./proxy/mist/ -run 'TestCheckInitialCodecSafeForAddr|TestCodecProductionSafeFailClosed' -v
@@ -55,8 +71,8 @@ jobs:
       - name: Lab build sanity (WITH tag, symbols present)
         run: |
           go build -tags mist_unsafe_initial -o /tmp/xray-lab ./main
-          if ! go tool nm /tmp/xray-lab | grep -q "proxy/mist.(\*RandomCiphertextCodec).buildInitial"; then
-            echo "::error::lab binary is missing codec symbols — the nm check itself may be broken"
+          if ! go tool nm /tmp/xray-lab | grep -q "UnsafeLabCanary"; then
+            echo "::error::lab binary is missing canary symbol — the nm check itself may be broken"
             exit 1
           fi
-          echo "OK: lab binary contains codec symbols (the check is effective)"
+          echo "OK: lab binary contains canary symbol (the check is effective)"

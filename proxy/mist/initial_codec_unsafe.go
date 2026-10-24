@@ -17,6 +17,33 @@ import (
 	"errors"
 )
 
+// UnsafeLabCanary is a safety-gate canary: it exists ONLY in lab builds
+// (compiled with `-tags mist_unsafe_initial`). The safety-gate workflow
+// checks that this symbol is present in the lab binary and absent from
+// the release binary, proving the nm check itself is effective (not
+// vacuously passing).
+//
+// Why a dedicated canary: the RandomCiphertextCodec methods (buildInitial,
+// parseInitialPacket) are small and get inlined by the Go compiler, so
+// `go tool nm` cannot find them even in lab builds. Since Phase 0, the
+// old check for those symbols has been vacuously passing.
+//
+//go:noinline prevents inlining; the init() call below prevents dead-code
+// elimination by the linker (an unreferenced function would be stripped).
+//
+//go:noinline
+func UnsafeLabCanary() int {
+	return 0xC1A9A7
+}
+
+// unsafeLabCanarySink keeps UnsafeLabCanary reachable so the linker does
+// not strip it. Referenced from init() in this file.
+var unsafeLabCanarySink = 0
+
+func init() {
+	unsafeLabCanarySink = UnsafeLabCanary()
+}
+
 // ---------------------------------------------------------------------------
 // Simplified implementation: random ciphertext
 // ---------------------------------------------------------------------------
