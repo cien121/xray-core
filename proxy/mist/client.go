@@ -90,7 +90,7 @@ func NewClient(ctx context.Context, config *ClientConfig) (*Client, error) {
 	// network; release builds additionally compile the codec out entirely
 	// (initial_codec_disabled.go, needs -tags mist_unsafe_initial for lab).
 	if config.GetUdp() {
-		if err := CheckInitialCodecSafeForAddr(&RandomCiphertextCodec{}, config.Address); err != nil {
+		if err := CheckInitialCodecSafeForAddr(&QUICInitialCodec{}, config.Address); err != nil {
 			return nil, err
 		}
 	}
@@ -169,12 +169,13 @@ func (c *Client) getUDPMgr(ctx context.Context) (*udpStreamManager, error) {
 		return c.udpMgr, nil
 	}
 
-	// Resolve server UDP address.
+	// Resolve server UDP address via safety gate (fail-closed).
 	addr := c.server.Address.String()
 	if addr == "" {
 		return nil, errors.New("mist udp: server address not set")
 	}
-	udpAddr, err := stdnet.ResolveUDPAddr("udp", stdnet.JoinHostPort(addr, itoa(int(c.server.Port))))
+	udpAddr, err := ResolvePeerAddrSafe(context.Background(),
+		stdnet.JoinHostPort(addr, itoa(int(c.server.Port))), &QUICInitialCodec{})
 	if err != nil {
 		return nil, errors.New("mist udp: resolve failed").Base(err)
 	}

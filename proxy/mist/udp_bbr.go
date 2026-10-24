@@ -161,6 +161,24 @@ func NewBBRController(maxDatagramSize int) *BBRController {
 	}
 }
 
+// NewBBRControllerWithClock creates a BBR controller with an injectable clock
+// (for deterministic tests).
+func NewBBRControllerWithClock(maxDatagramSize int, clock bbr.Clock) *BBRController {
+	sender := bbr.NewBbrSender(
+		clock,
+		congestion.ByteCount(maxDatagramSize),
+		bbr.ProfileStandard,
+	)
+	rttStats := NewUDPRTTStats()
+	sender.SetRTTStatsProvider(rttStats)
+	return &BBRController{
+		sender:       sender,
+		rttStats:     rttStats,
+		clock:        clock,
+		nextSendTime: time.Now(),
+	}
+}
+
 // OnPacketSent notifies BBR that a packet was sent.
 func (c *BBRController) OnPacketSent(packetNum uint32, bytes int, bytesInFlight int) {
 	c.sender.OnPacketSent(
@@ -234,9 +252,24 @@ func (c *BBRController) CongestionWindow() int {
 
 // PacingRate returns the current pacing rate in bytes per second.
 func (c *BBRController) PacingRate() float64 {
-	// Bandwidth is bytes per second in the bbr package.
-	return float64(c.sender.PacingRate())
+	// BBR Bandwidth is bits/sec; callers expect bytes/sec.
+	return float64(c.sender.PacingRate()) / 8
 }
+
+// PacingGain returns BBR's current pacing gain (for send log).
+func (c *BBRController) PacingGain() float64 {
+	return c.sender.PacingGain()
+}
+
+// BandwidthEstimate returns BBR's current bandwidth estimate in bits/sec.
+func (c *BBRController) BandwidthEstimate() uint64 {
+	return uint64(c.sender.BandwidthEstimate())
+}
+
+// OnAppLimited marks the connection as app-limited (no data to send).
+// The underlying BBR sender already detects app-limited conditions;
+// this is a no-op hook for the scheduler's drain notification.
+func (c *BBRController) OnAppLimited() {}
 
 // WaitForPacing blocks until the pacing budget allows sending.
 // Returns immediately if pacing allows sending now.

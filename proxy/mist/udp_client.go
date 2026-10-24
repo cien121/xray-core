@@ -30,7 +30,7 @@ func NewUDPClient(serverAddr *net.UDPAddr, cid [16]byte, kAuth [32]byte) *UDPCli
 		serverAddr: serverAddr,
 		cid:        cid,
 		kAuth:      kAuth,
-		codec:      &RandomCiphertextCodec{},
+		codec:      &QUICInitialCodec{},
 	}
 }
 

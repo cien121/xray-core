@@ -69,7 +69,9 @@ type udpStreamManager struct {
 	dgrams  map[byte]chan []byte // SID -> inbound DATAGRAM channel (UDP relay)
 	nextSID byte
 
-	sendMu sync.Mutex // serializes SealPacket + WriteToUDP
+	sendMu sync.Mutex // serializes sendAck (data goes via scheduler)
+
+	sched *UDPSendScheduler // centralized pacing + cwnd gate for data
 
 	doneCh chan struct{}
 	wg     sync.WaitGroup
@@ -90,12 +92,18 @@ func newUDPStreamManager(sess *UDPSession, conn UDPPacketConn, peer *stdnet.UDPA
 		doneCh:  make(chan struct{}),
 		nextSID: 1,
 	}
+	// Centralized send scheduler: pacing + cwnd gate (replaces WaitForPacing).
+	m.sched = NewUDPSendScheduler(sess, udpDirC2S, func(pkt []byte) error {
+		_, err := conn.WriteToUDP(pkt, peer)
+		return err
+	})
+	m.sched.Start()
 	// Wire reliability callbacks.
 	if sess.Rel != nil {
 		sess.Rel.OnRetransmit = func(frames [][]byte) error {
 			// Errors propagate: CheckRTO keeps the old sentPackets
 			// entries and retries instead of silently dropping data.
-			return m.sendFrames(frames)
+			return m.sched.WriteRetransmitChunked(frames)
 		}
 		sess.Rel.OnAckNeeded = func(largest uint32, ranges [][2]uint32) {
 			m.sendAck(largest, ranges)
@@ -116,6 +124,9 @@ func (m *udpStreamManager) Close() {
 		close(m.doneCh)
 	}
 	m.wg.Wait()
+	if m.sched != nil {
+		m.sched.Stop()
+	}
 	m.mu.Lock()
 	for _, st := range m.streams {
 		st.onSessionDead()
@@ -200,40 +211,10 @@ func (m *udpStreamManager) sendFrames(frames [][]byte) error {
 	if m.onSendFrames != nil {
 		m.onSendFrames(frames)
 	}
-	m.sendMu.Lock()
-	defer m.sendMu.Unlock()
-	// Chunk frames to fit MaxUDPPlaintext per packet.
-	var batch [][]byte
-	batchSize := 0
-	flush := func() error {
-		if len(batch) == 0 {
-			return nil
-		}
-		// Pacing: wait for BBR budget before sending.
-		if m.sess.BBR != nil {
-			m.sess.BBR.WaitForPacing()
-		}
-		pkt, err := m.sess.SealPacket(udpDirC2S, batch)
-		if err != nil {
-			return err
-		}
-		_, err = m.conn.WriteToUDP(pkt, m.peer)
-		batch = nil
-		batchSize = 0
-		return err
-	}
-	for _, f := range frames {
-		if batchSize+len(f) > MaxUDPPlaintext && len(batch) > 0 {
-			if err := flush(); err != nil {
-				return err
-			}
-		}
-		// Single frame larger than max: send alone (SealPacket will
-		// error, which is correct — such a frame is a bug).
-		batch = append(batch, f)
-		batchSize += len(f)
-	}
-	return flush()
+	// Via scheduler: pacing + cwnd gate, chunked to MaxUDPPlaintext.
+	// (Scheduler replaces the old WaitForPacing + direct SealPacket path;
+	// do NOT add pacing here, it would pace twice.)
+	return m.sched.Write(frames)
 }
 
 // sendAck transmits an ACK frame (untracked: ACKs are never retransmitted
@@ -309,9 +290,7 @@ func (m *udpStreamManager) rtoLoop() {
 		case <-m.doneCh:
 			return
 		case <-ticker.C:
-			if m.sess.Rel != nil {
-				m.sess.Rel.CheckRTO() // triggers OnRetransmit -> sendFrames
-			}
+			m.sess.Tick() // RTO check -> OnRetransmit -> scheduler
 		}
 	}
 }

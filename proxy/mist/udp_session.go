@@ -108,6 +108,15 @@ func (s *UDPSession) Touch() {
 	s.LastActive = time.Now()
 }
 
+// Tick performs periodic session maintenance: RTO check (triggers
+// OnRetransmit for timed-out packets). Call from rtoLoop or any periodic
+// loop; do not call CheckRTO directly.
+func (s *UDPSession) Tick() {
+	if s.Rel != nil {
+		_ = s.Rel.CheckRTO() // triggers OnRetransmit -> scheduler
+	}
+}
+
 // SealPacket encrypts frames into a UDP datagram.
 //
 // Steps:
@@ -120,10 +129,6 @@ func (s *UDPSession) Touch() {
 //  5. Prepend masked QUIC short header.
 //
 // Returns the full UDP datagram.
-func (s *UDPSession) SealPacket(dir uint32, frames [][]byte) ([]byte, error) {
-	return s.sealPacket(dir, frames, true)
-}
-
 // SealPacketUntracked seals like SealPacket but skips reliability/BBR
 // tracking. Use for ACK-only packets: they are never retransmitted and
 // must not consume congestion window.

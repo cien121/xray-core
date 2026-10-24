@@ -1086,3 +1086,14 @@ func formatSpeed(bw Bandwidth) string {
 	}
 	return fmt.Sprintf("%.2f %s", bwf, units[unitIndex])
 }
+
+// PacingGain returns the current pacing gain (exported for mist scheduler).
+func (b *bbrSender) PacingGain() float64 {
+	return b.pacingGain
+}
+
+// BandwidthEstimate returns the current bandwidth estimate in bits per
+// second (exported for mist scheduler).
+func (b *bbrSender) BandwidthEstimate() Bandwidth {
+	return b.bandwidthEstimate()
+}

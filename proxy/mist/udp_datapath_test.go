@@ -250,7 +250,7 @@ func (s *echoServer) serve(t *testing.T, kAuth [32]byte, cid [16]byte) {
 			if len(batch) == 0 {
 				return nil
 			}
-			pkt, err := s.sess.SealPacket(udpDirS2C, batch)
+			pkt, err := s.sess.sealPacket(udpDirS2C, batch, true)
 			if err != nil {
 				return err
 			}
@@ -394,7 +394,7 @@ func (s *echoServer) loop() {
 				if len(batch) == 0 {
 					return
 				}
-				pkt, err := s.sess.SealPacket(udpDirS2C, batch)
+				pkt, err := s.sess.sealPacket(udpDirS2C, batch, true)
 				if err == nil {
 					_, _ = s.conn.WriteToUDP(pkt, s.clientAddr)
 				}

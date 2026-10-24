@@ -214,6 +214,15 @@ type UDPReliability struct {
 	// BBR controller (for CanSend and RTT updates).
 	bbr *BBRController
 
+	// OnPacketsRetired is called (if set) after CheckRTO successfully
+	// retires old sentPackets entries. Used by tests to keep independent
+	// inflight accounting in sync.
+	OnPacketsRetired func(pns []uint32, bytes []int)
+
+	// now returns the current time. Overridable in tests for a
+	// deterministic clock.
+	now func() time.Time
+
 	// Callbacks (set by session).
 	// OnRetransmit is called with frames to retransmit (new packet number
 	// assigned by caller). It must seal+transmit the frames and return nil
@@ -234,6 +243,7 @@ func NewUDPReliability(bbr *BBRController) *UDPReliability {
 		recvWindow:  NewSlidingWindow(),
 		lastAckSent: time.Now(),
 		bbr:         bbr,
+		now:         time.Now,
 	}
 }
 
@@ -252,7 +262,7 @@ func (r *UDPReliability) PacketSent(packetNum uint32, frames [][]byte, bytes int
 	r.sentPackets[packetNum] = &SentPacket{
 		Frames:   cp,
 		Bytes:    bytes,
-		SendTime: time.Now(),
+		SendTime: r.now(),
 	}
 	r.bytesInFlight += bytes
 }
@@ -308,7 +318,7 @@ func (r *UDPReliability) updateRTOLocked(rtt time.Duration) {
 // ProcessAck handles an incoming ACK frame (largest + ranges).
 // Returns the list of newly-acked packet numbers.
 func (r *UDPReliability) ProcessAck(largest uint32, ranges [][2]uint32) []uint32 {
-	now := time.Now()
+	now := r.now()
 	var newlyAcked []uint32
 
 	// Fast retransmit detection: if largest didn't advance, count dup.
@@ -426,7 +436,7 @@ func (r *UDPReliability) PacketReceived(packetNum uint32) (isNew bool, ackNow bo
 // Call periodically (e.g., every 10ms) from the session's timer loop.
 func (r *UDPReliability) CheckRTO() [][]byte {
 	r.mu.Lock()
-	now := time.Now()
+	now := r.now()
 	type rtoPending struct {
 		pn uint32
 		sp *SentPacket
@@ -466,16 +476,26 @@ func (r *UDPReliability) CheckRTO() [][]byte {
 	// Success: new packets were sealed+tracked with new packet numbers.
 	// Retire the old entries (skip any that were ACKed concurrently).
 	r.mu.Lock()
+	var retiredPNs []uint32
+	var retiredBytes []int
 	for _, p := range pending {
 		if sp, ok := r.sentPackets[p.pn]; ok && sp == p.sp {
 			delete(r.sentPackets, p.pn)
 			r.bytesInFlight -= sp.Bytes
+			retiredPNs = append(retiredPNs, p.pn)
+			retiredBytes = append(retiredBytes, sp.Bytes)
 			// Notify BBR of loss.
 			if r.bbr != nil {
 				r.bbr.OnPacketLost(p.pn, sp.Bytes, r.bytesInFlight)
 			}
 		}
 	}
+	retireCb := r.OnPacketsRetired
+	r.mu.Unlock()
+	if retireCb != nil && len(retiredPNs) > 0 {
+		retireCb(retiredPNs, retiredBytes)
+	}
+	r.mu.Lock()
 	if r.bytesInFlight < 0 {
 		r.bytesInFlight = 0
 	}
@@ -488,6 +508,13 @@ func (r *UDPReliability) BytesInFlight() int {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return r.bytesInFlight
+}
+
+// SRTT returns the smoothed round-trip time (for scheduler pacing fallback).
+func (r *UDPReliability) SRTT() time.Duration {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.srtt
 }
 
 // CanSend reports whether the congestion window allows sending.
